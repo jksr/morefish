@@ -190,7 +190,7 @@ class MerfishRegion:
     cell_meta_file = 'cell_metadata.csv'
     cell_boundary_file = 'cell_boundaries.parquet'
     
-    def __init__(self, region_dir):
+    def __init__(self, region_dir, seg_name=None):
 
         self._prepare_dir(region_dir)
         
@@ -205,6 +205,13 @@ class MerfishRegion:
 
         logger.info('Preparing transcripts')
         self.transcripts = Transcripts(self.region_dir, self.morefish_dir, self.unit_transform)
+
+        self.adata = None
+        self.boundaries = None
+        self.current_seg_name = None
+
+        if seg_name is not None:
+            self.load_seg_results(seg_name)
 
         #self.detected_transcripts = pd.read_csv(self.region_dir/'detected_transcripts.csv', index_col=0)
         #self.detected_transcripts = gpd.GeoDataFrame(self.detected_transcripts,
@@ -364,6 +371,7 @@ class MerfishRegion:
         _cb['EntityID'] = seg_gdf.index.values
         _cb['Geometry'] = seg_gdf[geo_col].values
         _cb['Type'] = 'cell'
+        _cb.index = _cb['EntityID']
         ##TODO
         # _cb['ZIndex'] = None
         # _cb['ZLevel'] = None
@@ -409,76 +417,71 @@ class MerfishRegion:
         self._save_meta(seg_gdf, cell_x_gene_df, name, override)
         self._save_cellbygene(cell_x_gene_df, name, override)
 
-
-    ### TODO
-    
-#     def save_reseg_results(self, seg_gdf, cell_x_gene_df, name, override=False):
-#         rlt_dir = self.reseg_dir/name
-#         rlt_dir.mkdir(exist_ok=True)
-        
-#         cmeta_fn = rlt_dir/self.cell_meta_file
-#         cxg_fn = rlt_dir/self.cell_by_gene_file
-#         cb_fn = rlt_dir/self.cell_boundary_file
-#         if cmeta_fn.exists() and not override:
-#             raise ValueError(f'{cmeta_fn} already exists. Use "override=True" if you want to update it')
-#         if cxg_fn.exists() and not override:
-#             raise ValueError(f'{cxg_fn} already exists. Use "override=True" if you want to update it')
-#         if cb_fn.exists() and not override:
-#             raise ValueError(f'{cb_fn} already exists. Use "override=True" if you want to update it')
-        
-#         cols = pd.read_csv(self.region_dir/self.cell_by_gene_file, index_col=0, nrows=2).columns
-#         _cxg = cell_x_gene_df.reindex(columns=cols).fillna(0)
-        
-        
-#         _cb = gpd.GeoDataFrame(columns=['ID', 'EntityID', 'ZIndex', 'Geometry', 'Type', 
-#                                         'ZLevel', 'Name', 'ParentID', 'ParentType'],
-#                                geometry='Geometry')
-#         _cb['ID'] = np.arange(len(seg_gdf))
-#         _cb['EntityID'] = seg_gdf.index.values
-#         _cb['Geometry'] = seg_gdf['geometry'].values
-#         _cb['Type'] = 'cell'
-# #         _cb = _cb.fillna(None)
-
-        
-#         _cmeta = pd.DataFrame(index = _cb['EntityID'], columns = ['fov', 'volume', 'center_x', 'center_y', 
-#                                                                   'min_x', 'min_y', 'max_x', 'max_y', 
-#                                                                   'anisotropy', 'transcript_count',
-#                                                                   'perimeter_area_ratio', 'solidity', 
-#                                                                   'DAPI_raw', 'DAPI_high_pass', 
-#                                                                   'PolyT_raw', 'PolyT_high_pass'])
-#         xx,yy=np.array(_cb['Geometry'].centroid.apply(lambda x: (x.x, x.y)).to_list()).T
-#         _cmeta['center_x'] = xx
-#         _cmeta['center_y'] = yy
-#         _cmeta.loc[:,['min_x','min_y','max_x','max_y']] = _cb['Geometry'].bounds.values
-#         _cmeta['transcript_count'] = cell_x_gene_df.sum(1).reindex(_cmeta.index).fillna(0)
-        
-#         _cmeta.to_csv(rlt_dir/self.cell_meta_file)
-#         _cxg.to_csv(rlt_dir/self.cell_by_gene_file)
-#         _cb.to_parquet(rlt_dir/self.cell_boundary_file)
-        
-
-    def load_reseg_results(self, name=None):
+    def _load_anndata(self, name):
         def _negcols(cxg):
-            return cxg.columns[cxg.columns.str.startswith('Blank-')]
-
-        if name is None:
-            name = 'native'
-        if not self.check_seg_results(name):
-            raise ValueError(f'{name} does not refer to a valid segmentation result')
+            return cxg.columns[cxg.columns.str.startswith('Blank-')]    
+            
         cxg_fn, cmeta_fn, cb_fn = self._seg_name_to_path(name)
 
         cxg = pd.read_csv(cxg_fn, index_col=0, dtype={'cell': str,'EntityID': str})
         cmeta = pd.read_csv(cmeta_fn, index_col=0, dtype={'cell': str,'EntityID': str})
-        cb = gpd.read_parquet(cb_fn)
-        cb.index = cb['EntityID']
-        cb = cb.reindex(cxg.index)
+        # cb = gpd.read_parquet(cb_fn)
+        # cb.index = cb['EntityID']
+        # cb = cb.reindex(cxg.index)
         
         negcxg = cxg.loc[:,cxg.columns.isin(_negcols(cxg))]
         cxg = cxg.loc[:,~cxg.columns.isin(_negcols(cxg))]
         
         adata = anndata.AnnData(cxg, obs=cmeta.reindex(cxg.index), dtype=int)
         adata.uns['neg_probs'] = negcxg
-        adata.uns['cell_boundary'] = cb[['Geometry']]
-    #     adata.uns['merfish_region'] = self
-        return adata#, cxg, cmeta, cb
+        # adata.uns['cell_boundary'] = cb[['Geometry']]
+        # adata.uns['merfish_region'] = self
+        return adata
+    
+    def _load_boundaries(self, name):
+        cxg_fn, cmeta_fn, cb_fn = self._seg_name_to_path(name)
+        cxg = pd.read_csv(cxg_fn, index_col=0, dtype={'cell': str,'EntityID': str})
+        cb = gpd.read_parquet(cb_fn)
+        cb.index = cb['EntityID']
+        cb = cb.reindex(cxg.index)
+
+        self.boundaries = cb[['Geometry']]
+        return self.boundaries
+    
+    def load_segmentation_results(self, name=None):
+        if name is None:
+            name = 'native'
+        if not self.check_seg_results(name):
+            raise ValueError(f'"{name}" does not refer to a valid segmentation result')
+        logger.info(f'Loading segmentation results for "{name}"')
+        adata = self._load_anndata(name)
+        boundaries = self._load_boundaries(name)
+        self.adata = adata
+        self.boundaries = boundaries
+        self.current_seg_name = name
+
+    # def load_reseg_results(self, name=None):
+    #     def _negcols(cxg):
+    #         return cxg.columns[cxg.columns.str.startswith('Blank-')]
+
+    #     if name is None:
+    #         name = 'native'
+    #     if not self.check_seg_results(name):
+    #         raise ValueError(f'{name} does not refer to a valid segmentation result')
+    #     cxg_fn, cmeta_fn, cb_fn = self._seg_name_to_path(name)
+
+    #     cxg = pd.read_csv(cxg_fn, index_col=0, dtype={'cell': str,'EntityID': str})
+    #     cmeta = pd.read_csv(cmeta_fn, index_col=0, dtype={'cell': str,'EntityID': str})
+    #     cb = gpd.read_parquet(cb_fn)
+    #     cb.index = cb['EntityID']
+    #     cb = cb.reindex(cxg.index)
+        
+    #     negcxg = cxg.loc[:,cxg.columns.isin(_negcols(cxg))]
+    #     cxg = cxg.loc[:,~cxg.columns.isin(_negcols(cxg))]
+        
+    #     adata = anndata.AnnData(cxg, obs=cmeta.reindex(cxg.index), dtype=int)
+    #     adata.uns['neg_probs'] = negcxg
+    #     adata.uns['cell_boundary'] = cb[['Geometry']]
+    # #     adata.uns['merfish_region'] = self
+    #     return adata#, cxg, cmeta, cb
     
