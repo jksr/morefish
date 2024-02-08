@@ -5,35 +5,65 @@ from shapely import geometry
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import numpy as np
+from loguru import logger
+
+def get_imshow_extent(bbox, mr):
+    xmin,ymin,xmax,ymax = bbox.bounds
+    (xmin_,ymin_),(xmax_,ymax_) = mr.unit_transform.mosaic_to_micron(np.array([[xmin-0.5,ymin-0.5],
+                                                                               [xmax+0.5,ymax+0.5],]))
+    # (xmin_,xmax_),(ymin_,ymax_) = mr.unit_transform.mosaic_to_micron(np.array([[xmin-0.5,ymin+0.5],
+    #                                                                            [xmax-0.5,ymax+0.5],]))
+    # (xmin_,xmax_),(ymin_,ymax_) = mr.unit_transform.mosaic_to_micron(np.array([[xmin,ymin],
+    #                                                                            [xmax,ymax],]))
+
+    return [xmin_,xmax_,ymin_,ymax_]
 
 
+def imgplot_bbox(ax, bbox, mr, stain, z, **kwargs):
+    img = mr.get_stain_image(stain, z, bbox)
+    # y,x = img.shape
+    extent = get_imshow_extent(bbox, mr)
+    # logger.debug(f'px bbox:{bbox}')
+    # logger.debug(f'um extent: {extent}')
+    ax.imshow(img, extent=extent, 
+              origin='lower', 
+              aspect='equal',
+              **kwargs)
+    ax.set_aspect('equal')
+    ax.set_xlim(*extent[:2])
+    ax.set_ylim(*extent[2:])
+    return ax
 
-def imgplot_bbox(ax, bbox, mr, stain, z):
-    img = mr.read_single_stain_image(stain, z, bbox)
-    y,x = img.shape
-    ax.imshow(img, origin='lower')
-    ax.set_xlim(-0.5, x+0.5)
-    ax.set_ylim(-0.5, y+0.5)
-
-def imgplot(ax, tile_idx, mr, stain, z):
+def imgplot(ax, mr, stain, z, tile_idx, **kwargs):
     bbox = mr.tiles.tiles[tile_idx]
-    return imgplot_bbox(ax, bbox, mr, stain, z)
+    return imgplot_bbox(ax, bbox, mr, stain, z, **kwargs)
 
-def relocate(geo, w,h):
-    def relocate_polygon(poly, w,h):
-        xs,ys=poly.exterior.xy
-        return geometry.Polygon(zip(np.array(xs) - w,np.array(ys) - h))
 
-    if isinstance(geo, geometry.Point):
-        return geometry.Point(geo.x-w, geo.y-h)
-    elif isinstance(geo, geometry.Polygon):
-        return relocate_polygon(geo, w,h )
-    elif isinstance(geo, geometry.MultiPolygon):
-        return geometry.MultiPolygon([relocate_polygon(poly,w,h) for poly in geo.geoms])
-    elif isinstance(geo, geometry.GeometryCollection):
-        return geo
-    else:
-        raise TypeError
+
+
+
+
+
+
+
+
+
+
+# def relocate(geo, w,h):
+#     def relocate_polygon(poly, w,h):
+#         xs,ys=poly.exterior.xy
+#         return geometry.Polygon(zip(np.array(xs) - w,np.array(ys) - h))
+
+#     if isinstance(geo, geometry.Point):
+#         return geometry.Point(geo.x-w, geo.y-h)
+#     elif isinstance(geo, geometry.Polygon):
+#         return relocate_polygon(geo, w,h )
+#     elif isinstance(geo, geometry.MultiPolygon):
+#         return geometry.MultiPolygon([relocate_polygon(poly,w,h) for poly in geo.geoms])
+#     elif isinstance(geo, geometry.GeometryCollection):
+#         return geo
+#     else:
+#         raise TypeError
 
 
 
@@ -45,12 +75,14 @@ def geoplot_bbox(ax, bbox, gdf, style={}):
     }
     geo_styles.update(style)
 
-    wi,hi,ws,hs = bbox
-    window = geometry.Polygon([(wi, hi), (wi+ws, hi), (wi+ws, hi+hs), (wi, hi+hs)])
+    window = geometry.Polygon([(bbox.x,        bbox.y       ), 
+                               (bbox.x+bbox.w, bbox.y       ), 
+                               (bbox.x+bbox.w, bbox.y+bbox.h), 
+                               (bbox.x,        bbox.y+bbox.h)])
     geo_col = gdf.columns[gdf.dtypes=='geometry'][0]
     geos=gdf[gdf[geo_col].apply(window.intersects)]
-    geos[geo_col] = geos[geo_col].apply(lambda g:relocate(g, wi, hi))
-    
+    # geos[geo_col] = geos[geo_col].apply(lambda g:relocate(g, bbox.x, bbox.y))
+
     for geo_type, style in geo_styles.items():
         subset = geos[geos.geometry.type == geo_type]
         subset.plot(ax=ax, **style)
@@ -103,30 +135,30 @@ def boundaryplot(ax, tile_idx, mr_or_adata, name=None, adata=None):
     bbox = mr_or_adata.tiles.tiles[tile_idx]
     return boundaryplot_bbox(ax, bbox, mr_or_adata, name, adata)
 
-def transcriptplot_bbox(ax, bbox, mr):
-    wi,hi,ws,hs = bbox
-    window = geometry.Polygon([(wi, hi), (wi+ws, hi), (wi+ws, hi+hs), (wi, hi+hs)])
-    geos = mr.detected_transcripts[
-                        mr.detected_transcripts['position_mosaic'].apply(window.intersects)
-            ]['position_mosaic']
-    geos = gpd.GeoDataFrame(geometry=geos)
+# def transcriptplot_bbox(ax, bbox, mr):
+#     wi,hi,ws,hs = bbox
+#     window = geometry.Polygon([(wi, hi), (wi+ws, hi), (wi+ws, hi+hs), (wi, hi+hs)])
+#     geos = mr.detected_transcripts[
+#                         mr.detected_transcripts['position_mosaic'].apply(window.intersects)
+#             ]['position_mosaic']
+#     geos = gpd.GeoDataFrame(geometry=geos)
    
-    geoplot_bbox(ax, bbox, geos)
+#     geoplot_bbox(ax, bbox, geos)
 
-def transcriptplot(ax, tile_idx, mr):
-    bbox = mr.tiles.tiles[tile_idx]
-    return transcriptplot_bbox(ax, bbox, mr)
+# def transcriptplot(ax, tile_idx, mr):
+#     bbox = mr.tiles.tiles[tile_idx]
+#     return transcriptplot_bbox(ax, bbox, mr)
 
 
 
-def tileplot(mr, ax=None):
-    ## this works with imshow
-    if ax is None:
-        fig, ax = plt.subplots()
-    for i, (x, y, w, h) in enumerate(mr.tiles.tiles):
-        color = (1,1,1)  # white
-        alpha = 0.1
-        rectangle = patches.Rectangle((x, y), w, h, linewidth=1, edgecolor='k', facecolor=color + (alpha,))
-        ax.add_patch(rectangle)
-        ax.text(x+w/2, y+h/2, str(i), ha='center', va='center',)
+# def tileplot(mr, ax=None):
+#     ## this works with imshow
+#     if ax is None:
+#         fig, ax = plt.subplots()
+#     for i, (x, y, w, h) in enumerate(mr.tiles.tiles):
+#         color = (1,1,1)  # white
+#         alpha = 0.1
+#         rectangle = patches.Rectangle((x, y), w, h, linewidth=1, edgecolor='k', facecolor=color + (alpha,))
+#         ax.add_patch(rectangle)
+#         ax.text(x+w/2, y+h/2, str(i), ha='center', va='center',)
  
