@@ -217,10 +217,12 @@ class Segmentor:
     #         bbox = mr.tiles.tiles[tile_i]
         
     @classmethod
-    def _partition_transcripts(cls, seg_gdf, transcript_coords):
+    # def _partition_transcripts(cls, seg_gdf, transcript_coords):
+    def _partition_transcripts(cls, seg_gdf, transcript_df):
         geocol = geometry_colname(seg_gdf)
         part = []
-        for x,y,*_ in transcript_coords:
+        # for x,y,*_ in transcript_coords:
+        for _,(x,y,*_) in transcript_df.iterrows():
             cands = seg_gdf.sindex.intersection([x,y,x,y])
             point = geometry.Point(x,y)
 
@@ -250,19 +252,23 @@ class Segmentor:
 
         
         rlt = []
-        for i in tqdm.tqdm(range(0, len(self.mr.transcripts.coords_micron), chunk_size)):
-            outfn = self.partition_dir/f'{i}-{min(i+chunk_size, len(self.mr.transcripts.coords_micron))}.parts.npy'
+        # for i in tqdm.tqdm(range(0, len(self.mr.transcripts.coords_micron), chunk_size)):
+        #     outfn = self.partition_dir/f'{i}-{min(i+chunk_size, len(self.mr.transcripts.coords_micron))}.parts.npy'
+        for i in tqdm.tqdm(range(0, len(self.mr.transcripts.df), chunk_size)):
+            outfn = self.partition_dir/f'{i}-{min(i+chunk_size, len(self.mr.transcripts.df))}.parts.npy'
             if outfn.exists() and not override:
                 part = np.load(outfn).tolist()
             else:      
-                chunk = self.mr.transcripts.coords_micron[i:i+chunk_size]
+                # chunk = self.mr.transcripts.coords_micron[i:i+chunk_size]
+                chunk = self.mr.transcripts.df.iloc[i:i+chunk_size]
                 part = self._partition_transcripts(seg_gdf, chunk)
                 np.save(outfn, part)
             rlt.extend(part)
 
         logger.remove()
         logger.add(sys.stderr)
-        df = pd.DataFrame(np.vstack((rlt,self.mr.transcripts.genes)).T, columns=['cell','gene'])
+        df = pd.DataFrame(np.vstack((rlt,self.mr.transcripts.df['gene'])).T, columns=['cell','gene'])
+        # df = pd.DataFrame(np.vstack((rlt,self.mr.transcripts.genes)).T, columns=['cell','gene'])
         cxg = df[df['cell']!=-1].pivot_table(index='cell', columns='gene', 
                                             aggfunc='size', fill_value=0)
         cxg.index = seg_gdf.index[cxg.index]

@@ -130,57 +130,98 @@ class Transcripts:
         if proc_fn.exists():
             logger.info('Loading transcript coord file: transcripts.npz')
             npz = np.load(proc_fn, allow_pickle=True)
-            self.coords_micron = npz['coords_micron']
-            self.genes = npz['genes']
+            self.df = pd.DataFrame(np.hstack((npz['coords_micron'], npz['genes'][:,np.newaxis])), 
+                                   columns=['global_x','global_y','global_z','gene'],)
+
+            # self.coords_micron = npz['coords_micron']
+            # self.genes = npz['genes']
         else:
             logger.info('Transcript coord file not found. Preparing it. This may take a while.')
             logger.info('Reading original transcripts')
             df = pd.read_csv(ori_fn, index_col=0).sort_values(['global_x', 'global_y', 'global_z'])
-            self.coords_micron = df[['global_x','global_y', 'global_z']].values.astype(np.float32)
-            self.genes = df['gene'].values
- 
+            self.df = df[['global_x','global_y','global_z','gene']].reset_index(drop=True)
+            
             logger.info('Writing transcript file transcripts.npz')
             np.savez(proc_fn, 
-                     coords_micron = self.coords_micron, 
-                     genes = self.genes)
+                     coords_micron = self.df[['global_x','global_y', 'global_z']].values.astype(np.float32), 
+                     genes = self.df['gene'].values)
 
-    def get_transcripts(self, bbox, z=None, genes=None):
+            # df = pd.read_csv(ori_fn, index_col=0).sort_values(['global_x', 'global_y', 'global_z'])
+            # self.coords_micron = df[['global_x','global_y', 'global_z']].values.astype(np.float32)
+            # self.genes = df['gene'].values
+ 
+            # logger.info('Writing transcript file transcripts.npz')
+            # np.savez(proc_fn, 
+            #          coords_micron = self.coords_micron, 
+            #          genes = self.genes)
+
+
+    def get_transcripts(self, bbox=None, z=None, genes=None):
+        if bbox is None:
+            return self.df
+        
+        bbox = BBox(bbox)
         x,y,w,h = bbox
         (xmin,ymin),(xmax,ymax) = self.unit_transform.mosaic_to_micron(np.array([[x,y],[x+w,y+h]]))
         # logger.debug(f'px bbox:{bbox}')
         # logger.debug(f'um bounds: {(xmin,xmax,ymin,ymax)}')
-        within = (self.coords_micron[:,0]>=xmin) &\
-                 (self.coords_micron[:,0]<=xmax) &\
-                 (self.coords_micron[:,1]>=ymin) &\
-                 (self.coords_micron[:,1]<=ymax)
+        within = (self.df['global_x']>=xmin) &\
+                 (self.df['global_x']<=xmax) &\
+                 (self.df['global_y']>=ymin) &\
+                 (self.df['global_y']<=ymax)
         if z is not None:
             if isinstance(z,int):
-                within &= self.coords_micron[:,2]==z
+                within &= self.df['global_z']==z
             else:
-                within &= np.isin(self.coords_micron[:,2], z)
+                within &= np.isin(self.df['global_z'], z)
         if isinstance(genes, str):
-            within &= self.genes==genes
+            within &= self.df['gene']==genes
         elif isinstance(genes, (list, tuple)):
-            within &= np.isin(self.genes, genes)
+            within &= np.isin(self.df['gene'], genes)
         elif genes is not None:
             raise ValueError(f'Invalid input for genes: {genes}')
         
-        coords = self.coords_micron[within]
-        genes = self.genes[within]
-        df = pd.DataFrame(np.hstack((coords, genes[:,np.newaxis])), 
-                          columns=['global_x','global_y','global_z','gene'],
-                          index=np.where(within)[0])
-        return df
+        return self.df[within]
 
-    def get_transcripts_mosaic(self, bbox, z=None, genes=None):
-        df = self.get_transcripts(bbox, z, genes)
-        # df[['global_x','global_y', 'global_z']] = np.matmul(df[['global_x','global_y', 'global_z']].values, self.unit_transform.um_to_px.T)
-        df[['global_x','global_y']] = self.unit_transform.micron_to_mosaic(df[['global_x','global_y']].values)
 
-        # coords_micron, genes = self.get_transcripts_micron(bbox, z)
-        # coords_mosaic = np.matmul(coords_micron, self.unit_transform.um_to_px.T)
-        # return coords_mosaic, genes
-        return df
+    
+    # def get_transcripts(self, bbox, z=None, genes=None):
+    #     x,y,w,h = bbox
+    #     (xmin,ymin),(xmax,ymax) = self.unit_transform.mosaic_to_micron(np.array([[x,y],[x+w,y+h]]))
+    #     # logger.debug(f'px bbox:{bbox}')
+    #     # logger.debug(f'um bounds: {(xmin,xmax,ymin,ymax)}')
+    #     within = (self.coords_micron[:,0]>=xmin) &\
+    #              (self.coords_micron[:,0]<=xmax) &\
+    #              (self.coords_micron[:,1]>=ymin) &\
+    #              (self.coords_micron[:,1]<=ymax)
+    #     if z is not None:
+    #         if isinstance(z,int):
+    #             within &= self.coords_micron[:,2]==z
+    #         else:
+    #             within &= np.isin(self.coords_micron[:,2], z)
+    #     if isinstance(genes, str):
+    #         within &= self.genes==genes
+    #     elif isinstance(genes, (list, tuple)):
+    #         within &= np.isin(self.genes, genes)
+    #     elif genes is not None:
+    #         raise ValueError(f'Invalid input for genes: {genes}')
+        
+    #     coords = self.coords_micron[within]
+    #     genes = self.genes[within]
+    #     df = pd.DataFrame(np.hstack((coords, genes[:,np.newaxis])), 
+    #                       columns=['global_x','global_y','global_z','gene'],
+    #                       index=np.where(within)[0])
+    #     return df
+
+    # def get_transcripts_mosaic(self, bbox, z=None, genes=None):
+    #     df = self.get_transcripts(bbox, z, genes)
+    #     # df[['global_x','global_y', 'global_z']] = np.matmul(df[['global_x','global_y', 'global_z']].values, self.unit_transform.um_to_px.T)
+    #     df[['global_x','global_y']] = self.unit_transform.micron_to_mosaic(df[['global_x','global_y']].values)
+
+    #     # coords_micron, genes = self.get_transcripts_micron(bbox, z)
+    #     # coords_mosaic = np.matmul(coords_micron, self.unit_transform.um_to_px.T)
+    #     # return coords_mosaic, genes
+    #     return df
 
     
 
