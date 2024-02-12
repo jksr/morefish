@@ -25,7 +25,7 @@ class CellPoseModel:
                                                   gpu=gpu&torch.cuda.is_available())
 
     def segment(self, img, diameter=None, channels=[1,2], 
-                  channel_axis=2, origin_yx=[0,0], img_prefix='000000_000', 
+                  channel_axis=2, origin_xy=[0,0], img_prefix='000000_000', 
                   simplify_eps=0.5):
         # masks, flows, styles = self._model.eval(img, diameter=diameter, 
         masks, *_ = self._model.eval(img, diameter=diameter, 
@@ -35,18 +35,18 @@ class CellPoseModel:
         seg_ids = []
         for mask_i in range(1, masks.max()):
             seg_ids.append(f'{img_prefix}_{str(mask_i).zfill(6)}')
-            geos.append( polygons_from_masks(masks, mask_i, origin_yx, simplify_eps) )
+            geos.append( polygons_from_masks(masks, mask_i, origin_xy, simplify_eps) )
         gdf = gpd.GeoDataFrame(index=seg_ids, geometry=geos)
         return gdf
 
 
-def polygons_from_masks(masks, mask_id, mask_origin_yx = [0,0], simplify_eps = 0.5):
+def polygons_from_masks(masks, mask_id, mask_origin_xy = [0,0], simplify_eps = 0.5):
     contours,_ = cv2.findContours((masks==mask_id).astype('uint8'), 
                                     cv2.RETR_LIST, 
                                     cv2.CHAIN_APPROX_SIMPLE,)
 
     ## having len(c)>=3 is important to remove bad contours, like two pixels 
-    poly = geometry.MultiPolygon(geometry.Polygon(c.squeeze()+mask_origin_yx) for c in contours if len(c)>=3) 
+    poly = geometry.MultiPolygon(geometry.Polygon(c.squeeze()+mask_origin_xy) for c in contours if len(c)>=3) 
     poly = poly.simplify(simplify_eps)
     return poly
 
@@ -99,7 +99,7 @@ class Segmentor:
                 else:
                     gdf = self.model.segment(self.mr.get_tile_image(stains, z,tile_i), diameter=diameter, channels=channels, 
                                              ##TODO this xy seems wrong
-                                            origin_yx=tile_bbox[:2], 
+                                            origin_xy=tile_bbox[:2], 
                                             img_prefix=self._formart_seg_prefix(tile_i, z), 
                                             # img_prefix=self._gen_img_prefix(), z_prefix=z, 
                                             simplify_eps=simplify_eps)
@@ -116,8 +116,7 @@ class Segmentor:
     
     @classmethod
     def find_ovlp_btwn_segs(cls, gdf1, gdf2):
-        ##TODO [contains, within, overlaps]
-        ##TODO this has some problem with 'how="inner"'
+        ##TODO 'intersects' seems ok, but may need to check for other options [contains, within, overlaps]
         # return gpd.sjoin(gdf1, gdf2, how="inner", predicate="overlaps")
         return gpd.sjoin(gdf1, gdf2, how="inner", predicate="intersects")
 

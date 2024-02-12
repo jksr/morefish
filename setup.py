@@ -19,4 +19,7 @@ setuptools.setup(
         "Operating System :: OS Independent",
     ],
     python_requires='>=3.8',
+        entry_points={
+        'console_scripts': ['morefish=morefish.__main__:main',],
+    }
 )
