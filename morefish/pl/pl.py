@@ -6,15 +6,27 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import numpy as np
 from loguru import logger
+import tifffile
+
+def guess_vmin_vmax(mr, stain, z, step=2000):
+    tif_fn = mr.mosaic_file_path(stain, z)
+    img = tifffile.memmap(tif_fn)[::step,::step]
+    vmin = np.percentile(img[img>0], 0.5)
+    vmax = np.percentile(img[img>0], 99.5)
+    return vmin, vmax
+
+
+def guess_font_size(ax):
+    fig = ax.figure
+    current_figsize = fig.get_size_inches()
+    scaling_factor_figsize = max(current_figsize) / 10
+    return 10 * scaling_factor_figsize
+
 
 def imshow_extent(bbox, mr):
     xmin,ymin,xmax,ymax = bbox.bounds
     (xmin_,ymin_),(xmax_,ymax_) = mr.unit_transform.mosaic_to_micron(np.array([[xmin-0.5,ymin-0.5],
                                                                                [xmax+0.5,ymax+0.5],]))
-    # (xmin_,xmax_),(ymin_,ymax_) = mr.unit_transform.mosaic_to_micron(np.array([[xmin-0.5,ymin+0.5],
-    #                                                                            [xmax-0.5,ymax+0.5],]))
-    # (xmin_,xmax_),(ymin_,ymax_) = mr.unit_transform.mosaic_to_micron(np.array([[xmin,ymin],
-    #                                                                            [xmax,ymax],]))
     return [xmin_,xmax_,ymin_,ymax_]
 
 def global_bounds(*,tile_idx=None,bbox=None,mr=None,):
@@ -59,23 +71,20 @@ def imgplot_bbox(mr, bbox, *, stain, z, ax=None, **kwargs):
 def imgplot(mr, stain, z, tile_idx, *, ax=None, **kwargs):
     if isinstance(tile_idx, int):
         tile_idx = [tile_idx]
-    elif not isinstance(tile_idx, list):
+    elif isinstance(tile_idx, list):
+        if kwargs.get('vmin', None) is None or kwargs.get('vmax', None) is None:
+            vmin, vmax = guess_vmin_vmax(mr, stain, z)
+            if 'vmin' not in kwargs:
+                kwargs['vmin'] = vmin*0.99
+            if 'vmax' not in kwargs:
+                kwargs['vmax'] = vmax*1.01
+    else:
         raise ValueError('tile_idx should be an integer or a list of integers')
     ax = axis_to_plot(ax)
 
-
-    # xmin = np.inf
-    # ymin = np.inf
-    # xmax = -np.inf
-    # ymax = -np.inf
     for idx in tile_idx:
         bbox = mr.tiles.tiles[idx]
         imgplot_bbox(mr, bbox, stain=stain, ax=ax, z=z, **kwargs)
-    #     xmin_,ymin_,xmax_,ymax_ = global_bounds(bbox=bbox, mr=mr)
-    #     xmin = min(xmin, xmin_)
-    #     ymin = min(ymin, ymin_)
-    #     xmax = max(xmax, xmax_)
-    #     ymax = max(ymax, ymax_)
 
     xmin,ymin,xmax,ymax = global_bounds(tile_idx=tile_idx, mr=mr)
     ax.set_aspect('equal')
@@ -100,18 +109,9 @@ def boundaryplot(mr, tile_idx, *, ax=None,  z=None, **kwargs):
         raise ValueError('tile_idx should be an integer or a list of integers')
     ax = axis_to_plot(ax)
 
-    # xmin = np.inf
-    # ymin = np.inf
-    # xmax = -np.inf
-    # ymax = -np.inf
     for idx in tile_idx:
         bbox = mr.tiles.tiles[idx]
         boundaryplot_bbox(mr, bbox, ax=ax, z=z, **kwargs)
-        # xmin_,ymin_,xmax_,ymax_ = global_bounds(bbox=bbox, mr=mr)
-        # xmin = min(xmin, xmin_)
-        # ymin = min(ymin, ymin_)
-        # xmax = max(xmax, xmax_)
-        # ymax = max(ymax, ymax_)
 
     xmin,ymin,xmax,ymax = global_bounds(tile_idx=tile_idx, mr=mr)
     ax.set_aspect('equal')
@@ -120,8 +120,6 @@ def boundaryplot(mr, tile_idx, *, ax=None,  z=None, **kwargs):
     return ax
 
 def transcriptplot_bbox(mr, bbox, *, ax=None, z=None, sample_frac=0.05, **kwargs):
-    if mr.current_seg_name is None:
-        raise ValueError('No segmentation found. Please run "MerfishRegion.load_segmentation_results(seg_name)" first')
     transcript_df = mr.transcripts.get_transcripts(bbox, z=z).sample(frac=sample_frac)
     ax.scatter(transcript_df['global_x'], transcript_df['global_y'], **kwargs)
     return ax
@@ -133,18 +131,9 @@ def transcriptplot(mr, tile_idx, *, ax=None, z=None, sample_frac=0.05, **kwargs)
         raise ValueError('tile_idx should be an integer or a list of integers')
     ax = axis_to_plot(ax)    
 
-    # xmin = np.inf
-    # ymin = np.inf
-    # xmax = -np.inf
-    # ymax = -np.inf
     for idx in tile_idx:
         bbox = mr.tiles.tiles[idx]
-        transcriptplot_bbox(mr, bbox, ax=ax, z=z, **kwargs)
-        # xmin_,ymin_,xmax_,ymax_ = global_bounds(bbox=bbox, mr=mr)
-        # xmin = min(xmin, xmin_)
-        # ymin = min(ymin, ymin_)
-        # xmax = max(xmax, xmax_)
-        # ymax = max(ymax, ymax_)
+        transcriptplot_bbox(mr, bbox, ax=ax, z=z, sample_frac=sample_frac, **kwargs)
 
     xmin,ymin,xmax,ymax = global_bounds(tile_idx=tile_idx, mr=mr)
     ax.set_aspect('equal')
@@ -153,12 +142,23 @@ def transcriptplot(mr, tile_idx, *, ax=None, z=None, sample_frac=0.05, **kwargs)
     return ax
 
 
+
 def tileplot(mr, ax=None,**kwargs):
     ax = axis_to_plot(ax)
-    for i, (x, y, w, h) in enumerate(mr.tiles.tiles):
+    
+    fontsize = guess_font_size(ax)
+    fontcolor = 'c'
+#     fontsize = kwargs.get('fontsize', guess_font_size(ax))
+#     fontcolor = kwargs.get('fontsize', 'c')
+    for i, (x_, y_, w_, h_) in enumerate(mr.tiles.tiles):
+        (x,y),(w,h), = mr.unit_transform.mosaic_to_micron([[x_,y_],[x_+w_,y_+h_]])
+        w-=x
+        h-=y
+        
         ax.plot([x,x+w,x+w,x,x],[y,y,y+h,y+h,y], **kwargs)
-        ax.text(x+w/2, y+h/2, str(i), ha='center', va='center',)
+        ax.text(x+w/2, y+h/2, str(i), ha='center', va='center',fontsize=fontsize, color=fontcolor)
     return ax
+
  
 
 
