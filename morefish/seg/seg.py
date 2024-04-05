@@ -37,6 +37,15 @@ class CellPoseModel:
             seg_ids.append(f'{img_prefix}_{str(mask_i).zfill(6)}')
             geos.append( polygons_from_masks(masks, mask_i, origin_xy, simplify_eps) )
         gdf = gpd.GeoDataFrame(index=seg_ids, geometry=geos)
+
+        # take care of self-intersection of shape
+        invalids = []
+        for idx,_ in gdf.iterrows():
+            if not gdf.loc[idx,'geometry'].is_valid:
+                gdf.loc[idx,'geometry'] = gdf.loc[idx,'geometry'].buffer(0)
+                if not gdf.loc[idx,'geometry'].is_valid:
+                    invalids.append(idx)
+        gdf = gdf[~gdf.index.isin(invalids)]
         return gdf
 
 
@@ -75,7 +84,28 @@ class Segmentor:
     def _formart_seg_prefix(cls, tile_i, z):
         return f'{str(tile_i).zfill(6)}{str(z).zfill(2)}'
     
-
+    def segment_tile(self, stains, z, tile_i, override=False,
+                     diameter=None, 
+                     channels=[1,2], gpu=True, simplify_eps=0.5,logging=False):
+        if logging:
+            logger.info(f'Segmenting tile {tile_i} for task "{self.name}". '
+                        f'{"Overriding existing segmentations." if override else "Skipping existing segmentations."}')
+        outfn = self.tile_dir/( '+'.join([stain for stain in stains if stain is not None]) +\
+                               f'_z{z}_{tile_i}.parquet')
+        if outfn.exists() and not override:
+            gdf = gpd.read_parquet(outfn)
+        else:        
+            gdf = self.model.segment(self.mr.get_tile_image(stains, z,tile_i), diameter=diameter, channels=channels, 
+                                     ##TODO this xy seems wrong
+                                    origin_xy=self.mr.tiles.tiles[tile_i][:2], 
+                                    img_prefix=self._formart_seg_prefix(tile_i, z), 
+                                    # img_prefix=self._gen_img_prefix(), z_prefix=z, 
+                                    simplify_eps=simplify_eps)
+            gdf['geometry'] = gdf['geometry'].apply(self.mr.unit_transform.mosaic_to_micron)
+            gdf['ZIndex'] = z
+            gdf.to_parquet(outfn)
+        return gdf
+    
     ##TODO may be change "all" to more flexible options
     def segment_all_tiles(self, stains, z, override=False,
                           diameter=None, 
@@ -86,32 +116,55 @@ class Segmentor:
         logger.remove()
         logger.add(lambda msg: tqdm.tqdm.write(msg, end=""), colorize=True)
 
-        outfn_prefix = '+'.join([stain for stain in stains if stain is not None])+f'_z{z}'
         gdfs = []
         import warnings
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", category=UserWarning)
-            for tile_i,tile_bbox, in enumerate(tqdm.tqdm(self.mr.tiles.tiles)):
-                outfn = self.tile_dir/f'{outfn_prefix}_{tile_i}.parquet'
-
-                if outfn.exists() and not override:
-                    gdf = gpd.read_parquet(outfn)
-                else:
-                    gdf = self.model.segment(self.mr.get_tile_image(stains, z,tile_i), diameter=diameter, channels=channels, 
-                                             ##TODO this xy seems wrong
-                                            origin_xy=tile_bbox[:2], 
-                                            img_prefix=self._formart_seg_prefix(tile_i, z), 
-                                            # img_prefix=self._gen_img_prefix(), z_prefix=z, 
-                                            simplify_eps=simplify_eps)
-                    gdf['geometry'] = gdf['geometry'].apply(self.mr.unit_transform.mosaic_to_micron)
-                    gdf['ZIndex'] = z
-                    gdf.to_parquet(outfn)
+            for tile_i,_, in enumerate(tqdm.tqdm(self.mr.tiles.tiles)):
+                gdf = self.segment_tile(stains, z, tile_i, override=override, 
+                                        diameter=diameter, 
+                                        channels=channels, gpu=gpu, simplify_eps=simplify_eps,logging=False)
                 gdfs.append(gdf)
 
         logger.remove()
         logger.add(sys.stderr)
 
-        return gdfs
+        return gdfs    
+    # def segment_all_tiles(self, stains, z, override=False,
+    #                       diameter=None, 
+    #                       channels=[1,2], gpu=True, simplify_eps=0.5,):
+
+    #     logger.info(f'Segmenting each tile for task "{self.name}". '
+    #                 f'{"Overriding existing segmentations." if override else "Skipping existing segmentations."}')
+    #     logger.remove()
+    #     logger.add(lambda msg: tqdm.tqdm.write(msg, end=""), colorize=True)
+
+    #     outfn_prefix = '+'.join([stain for stain in stains if stain is not None])+f'_z{z}'
+    #     gdfs = []
+    #     import warnings
+    #     with warnings.catch_warnings():
+    #         warnings.simplefilter("ignore", category=UserWarning)
+    #         for tile_i,tile_bbox, in enumerate(tqdm.tqdm(self.mr.tiles.tiles)):
+    #             outfn = self.tile_dir/f'{outfn_prefix}_{tile_i}.parquet'
+
+    #             if outfn.exists() and not override:
+    #                 gdf = gpd.read_parquet(outfn)
+    #             else:
+    #                 gdf = self.model.segment(self.mr.get_tile_image(stains, z,tile_i), diameter=diameter, channels=channels, 
+    #                                          ##TODO this xy seems wrong
+    #                                         origin_xy=tile_bbox[:2], 
+    #                                         img_prefix=self._formart_seg_prefix(tile_i, z), 
+    #                                         # img_prefix=self._gen_img_prefix(), z_prefix=z, 
+    #                                         simplify_eps=simplify_eps)
+    #                 gdf['geometry'] = gdf['geometry'].apply(self.mr.unit_transform.mosaic_to_micron)
+    #                 gdf['ZIndex'] = z
+    #                 gdf.to_parquet(outfn)
+    #             gdfs.append(gdf)
+
+    #     logger.remove()
+    #     logger.add(sys.stderr)
+
+    #     return gdfs
 
     
     @classmethod

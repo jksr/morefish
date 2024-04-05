@@ -247,6 +247,9 @@ class MerfishRegion:
         logger.info('Preparing transcripts')
         self.transcripts = Transcripts(self.region_dir, self.morefish_dir, self.unit_transform)
 
+        logger.info('Preparing native results')
+        self._prepare_native()
+
         self.adata = None
         self.boundaries = None
         self.current_seg_name = None
@@ -300,9 +303,34 @@ class MerfishRegion:
             self.tiles.write_tiles_file(str(self.morefish_dir/'tiles.json'))
             logger.info('Tile file tiles.json not found. Creating a new one')
 
+    def _prepare_native(self):
+        if 'native' in self.list_seg_results():
+            return
+        try:
+            natdir = self.reseg_dir/'native'
+            natdir.mkdir(exist_ok=True)
+            cxg = pd.read_csv(self.region_dir/self.cell_by_gene_file, index_col=0, dtype={'cell': str,'EntityID': str})
+            # cmeta = pd.read_csv(self.region_dir/self.cell_meta_file, index_col=0, dtype={'cell': str,'EntityID': str})
+            cb = gpd.read_parquet(self.region_dir/self.cell_boundary_file)
+            cb['EntityID'] = cb['EntityID'].astype(str)
+            cb['tmp'] = (cb['ZIndex']-3.01).abs()
+            reduced_cb = {}
+            for _,row in cb.iterrows():
+                if row[cb.geometry.name].is_empty:
+                    continue
+                if row['EntityID'] not in reduced_cb or row['tmp']<reduced_cb[row['EntityID']]['tmp']:
+                    reduced_cb[row['EntityID']] = row
+            cb = gpd.GeoDataFrame(pd.concat(reduced_cb.values(), axis=1).T.drop(columns=['tmp']), geometry=cb.geometry.name)
+            cb.index = cb['EntityID']
+            cxg = cxg[cxg.index.isin(cb['EntityID'])]
+            self.save_reseg_results(cb, cxg, 'native')
+        except Exception as e:
+            logger.warning(f'Error in prepare native segmentation: {e}')
+
     def list_seg_results(self):
         names = [x for x in self.reseg_dir.glob('**/') if x!=self.reseg_dir]
-        names = ['native'] + [x.name for x in names]
+        # names = ['native'] + [x.name for x in names]
+        names = [x.name for x in names]
         seg_names = []
         for name in names:
             if self.check_seg_results(name):
@@ -314,14 +342,18 @@ class MerfishRegion:
         return cxg_fn.exists() and cmeta_fn.exists() and cb_fn.exists()
 
     def _seg_name_to_path(self, name):
-        if name is not None and name!='native':
-            cxg_fn = self.reseg_dir/name/self.cell_by_gene_file
-            cmeta_fn = self.reseg_dir/name/self.cell_meta_file
-            cb_fn = self.reseg_dir/name/self.cell_boundary_file
-        else:
-            cxg_fn = self.region_dir/self.cell_by_gene_file
-            cmeta_fn = self.region_dir/self.cell_meta_file
-            cb_fn = self.region_dir/self.cell_boundary_file
+        # if name is not None and name!='native':
+        #     cxg_fn = self.reseg_dir/name/self.cell_by_gene_file
+        #     cmeta_fn = self.reseg_dir/name/self.cell_meta_file
+        #     cb_fn = self.reseg_dir/name/self.cell_boundary_file
+        # else:
+        #     cxg_fn = self.region_dir/self.cell_by_gene_file
+        #     cmeta_fn = self.region_dir/self.cell_meta_file
+        #     cb_fn = self.region_dir/self.cell_boundary_file
+        cxg_fn = self.reseg_dir/name/self.cell_by_gene_file
+        cmeta_fn = self.reseg_dir/name/self.cell_meta_file
+        cb_fn = self.reseg_dir/name/self.cell_boundary_file
+
         return cxg_fn, cmeta_fn, cb_fn       
         
     def mosaic_file_name(self, stain, z):
